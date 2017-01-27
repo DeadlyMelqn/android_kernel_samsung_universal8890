@@ -25,7 +25,7 @@
 	model_info-chip = <8890>;
 	model_info-platform = "android";
 	model_info-subtype = "samsung";
-	model_info-hw_rev = <8>;
+	model_info-hw_rev = <9>;
 	model_info-hw_rev_end = <10>;
 	compatible = "samsung,exynos8890", "samsung,UNIVERSAL8890";
 
