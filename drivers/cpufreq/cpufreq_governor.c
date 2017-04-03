@@ -305,11 +305,11 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		dbs_data->cdata = cdata;
 		dbs_data->usage_count = 1;
 
-		if (cdata->governor == GOV_ELEMENTALX)
+		if (cdata->governor == GOV_ELEMENTALX) {
 			rc = cdata->init_ex(dbs_data, policy);
-	   else if (cdata->governor == GOV_ZZMOOVE)
+	    } else if (cdata->governor == GOV_ZZMOOVE) {
 			rc = cdata->init_zz(dbs_data, policy);
-		else
+		} else
 			rc = cdata->init(dbs_data, policy);
 
 		if (rc) {
@@ -350,6 +350,14 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 					CPUFREQ_TRANSITION_NOTIFIER);
 		}
 
+		if ((cdata->governor == GOV_ZZMOOVE) &&
+				(!policy->governor->initialized)) {
+			struct zz_ops *zz_ops = dbs_data->cdata->gov_ops;
+
+			cpufreq_register_notifier(zz_ops->notifier_block,
+					CPUFREQ_TRANSITION_NOTIFIER);
+		}
+
 		if (!have_governor_per_policy())
 			cdata->gdbs_data = dbs_data;
 
@@ -367,6 +375,14 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 				struct cs_ops *cs_ops = dbs_data->cdata->gov_ops;
 
 				cpufreq_unregister_notifier(cs_ops->notifier_block,
+						CPUFREQ_TRANSITION_NOTIFIER);
+			}
+
+			if ((dbs_data->cdata->governor == GOV_ZZMOOVE) &&
+				(policy->governor->initialized == 1)) {
+				struct zz_ops *zz_ops = dbs_data->cdata->gov_ops;
+
+				cpufreq_unregister_notifier(zz_ops->notifier_block,
 						CPUFREQ_TRANSITION_NOTIFIER);
 			}
 
@@ -444,8 +460,9 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 			ex_dbs_info->down_floor = 0;
 			ex_dbs_info->enable = 1;
 		} else if (dbs_data->cdata->governor == GOV_ZZMOOVE) {
-			zz_dbs_info->down_floor = 0;
+			zz_dbs_info->down_skip = 0;
 			zz_dbs_info->enable = 1;
+			zz_dbs_info->requested_freq = policy->cur;
 		} else {
 			od_dbs_info->rate_mult = 1;
 			od_dbs_info->sample_type = OD_NORMAL_SAMPLE;
