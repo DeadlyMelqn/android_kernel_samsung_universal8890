@@ -130,12 +130,11 @@ config CPU_FREQ_DEFAULT_GOV_ZZMOOVE
 
 config CPU_FREQ_DEFAULT_GOV_IMPULSE
 	bool "impulse"
-	depends on SCHED_FREQ_INPUT
-	select CPU_FREQ_GOV_IMPULSE
-	help
-	  Use the CPUFreq governor 'impulse' as default. This allows
-	  you to get a full dynamic cpu frequency capable system by simply
-	  loading your cpufreq low-level hardware driver, using the
+	 select CPU_FREQ_GOV_IMPULSE
+	 help
+	   Use the CPUFreq governor 'impulse' as default. This allows
+	   you to get a full dynamic cpu frequency capable system by simply
+	   loading your cpufreq low-level hardware driver, using the
 	  'impulse' governor for latency-sensitive workloads.
 
 config CPU_FREQ_DEFAULT_GOV_BARRY_ALLEN
@@ -458,12 +457,11 @@ config CPU_FREQ_GOV_ZZMOOVE
 
 config CPU_FREQ_GOV_IMPULSE
 	tristate "'interactive' cpufreq policy governor"
-	depends on SCHED_FREQ_INPUT
 	help
-	  'impulse' - This driver adds a dynamic cpufreq policy governor
-	  designed for latency-sensitive workloads.
+		'impulse' - This driver adds a dynamic cpufreq policy governor
+		designed for latency-sensitive workloads.
 
-	  If in doubt, say N.
+		If in doubt, say N.
 
 config CPU_FREQ_GOV_BARRY_ALLEN
 	tristate "'barry_allen' cpufreq policy governor"

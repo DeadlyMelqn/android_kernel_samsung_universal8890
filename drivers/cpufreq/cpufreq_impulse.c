@@ -66,10 +66,6 @@ static cpumask_t speedchange_cpumask;
 static spinlock_t speedchange_cpumask_lock;
 static struct mutex gov_lock;
 
-static int set_window_count;
-static int migration_register_count;
-static struct mutex sched_lock;
-
 /* Target load.  Lower values result in higher CPU speeds. */
 #define DEFAULT_TARGET_LOAD 90
 static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
@@ -121,14 +117,8 @@ struct cpufreq_impulse_tunables {
 	int timer_slack_val;
 	bool io_is_busy;
 
-	/* scheduler input related flags */
-	bool use_sched_load;
-	bool use_migration_notif;
-
 	/*
-	 * Whether to align timer windows across all CPUs. When
-	 * use_sched_load is true, this flag is ignored and windows
-	 * will always be aligned.
+	 * Whether to align timer windows across all CPUs.
 	 */
 	bool align_windows;
 
@@ -155,7 +145,7 @@ static u64 round_to_nw_start(u64 jif,
 	unsigned long step = usecs_to_jiffies(tunables->timer_rate);
 	u64 ret;
 
-	if (tunables->use_sched_load || tunables->align_windows) {
+	if (tunables->align_windows) {
 		do_div(jif, step);
 		ret = (jif + 1) * step;
 	} else {
@@ -163,13 +153,6 @@ static u64 round_to_nw_start(u64 jif,
 	}
 
 	return ret;
-}
-
-static inline int set_window_helper(
-			struct cpufreq_impulse_tunables *tunables)
-{
-	return sched_set_window(round_to_nw_start(get_jiffies_64(), tunables),
-			 usecs_to_jiffies(tunables->timer_rate));
 }
 
 static void cpufreq_impulse_timer_resched(unsigned long cpu,
@@ -418,7 +401,6 @@ static void cpufreq_impulse_timer(unsigned long data)
 	unsigned long flags;
 	unsigned long max_cpu;
 	int i, fcpu;
-	struct cpufreq_govinfo govinfo;
 
 	if (!down_read_trylock(&ppol->enable_sem))
 		return;
@@ -446,25 +428,16 @@ static void cpufreq_impulse_timer(unsigned long data)
 	}
 #endif
 
-	if (tunables->use_sched_load)
-		sched_get_cpus_busy(ppol->cpu_busy_times,
-				    ppol->policy->related_cpus);
 	max_cpu = cpumask_first(ppol->policy->cpus);
 	for_each_cpu(i, ppol->policy->cpus) {
 		pcpu = &per_cpu(cpuinfo, i);
-		if (tunables->use_sched_load) {
-			cputime_speedadj = (u64)ppol->cpu_busy_times[i - fcpu]
-					* ppol->policy->cpuinfo.max_freq;
-			do_div(cputime_speedadj, tunables->timer_rate);
-		} else {
-			now = update_load(i);
-			delta_time = (unsigned int)
-				(now - pcpu->cputime_speedadj_timestamp);
-			if (WARN_ON_ONCE(!delta_time))
-				continue;
-			cputime_speedadj = pcpu->cputime_speedadj;
-			do_div(cputime_speedadj, delta_time);
-		}
+		now = update_load(i);
+		delta_time = (unsigned int)
+			(now - pcpu->cputime_speedadj_timestamp);
+		if (WARN_ON_ONCE(!delta_time))
+			continue;
+		cputime_speedadj = pcpu->cputime_speedadj;
+		do_div(cputime_speedadj, delta_time);
 		tmploadadjfreq = (unsigned int)cputime_speedadj * 100;
 		pcpu->loadadjfreq = tmploadadjfreq;
 
@@ -475,31 +448,9 @@ static void cpufreq_impulse_timer(unsigned long data)
 	}
 	spin_unlock_irqrestore(&ppol->load_lock, flags);
 
-	/*
-	 * Send govinfo notification.
-	 * Govinfo notification could potentially wake up another thread
-	 * managed by its clients. Thread wakeups might trigger a load
-	 * change callback that executes this function again. Therefore
-	 * no spinlock could be held when sending the notification.
-	 */
-	for_each_cpu(i, ppol->policy->cpus) {
-		pcpu = &per_cpu(cpuinfo, i);
-		govinfo.cpu = i;
-		govinfo.load = pcpu->loadadjfreq / ppol->policy->max;
-		govinfo.sampling_rate_us = tunables->timer_rate;
-		atomic_notifier_call_chain(&cpufreq_govinfo_notifier_list,
-					   CPUFREQ_LOAD_CHANGE, &govinfo);
-	}
-
 	spin_lock_irqsave(&ppol->target_freq_lock, flags);
 	cpu_load = loadadjfreq / ppol->policy->cur;
 	tunables->boosted = cpu_load >= tunables->go_hispeed_load;
-#ifdef CONFIG_CPU_BOOST
-	tunables->boosted = check_cpuboost(data) || tunables->boosted;
-#endif			
-#ifdef CONFIG_MSM_HOTPLUG
-	tunables->boosted = fast_lane_mode || tunables->boosted;
-#endif
 #ifdef CONFIG_STATE_NOTIFIER
 	tunables->boosted = tunables->boosted && !state_suspended;
 #endif
@@ -599,7 +550,6 @@ exit:
 	return;
 }
 
-
 static int cpufreq_impulse_speedchange_task(void *data)
 {
 	unsigned int cpu;
@@ -658,42 +608,6 @@ static int cpufreq_impulse_speedchange_task(void *data)
 
 	return 0;
 }
-
-static int load_change_callback(struct notifier_block *nb, unsigned long val,
-				void *data)
-{
-	unsigned long cpu = (unsigned long) data;
-	struct cpufreq_impulse_policyinfo *ppol = per_cpu(polinfo, cpu);
-	struct cpufreq_impulse_tunables *tunables;
-
-	if (speedchange_task == current)
-		return 0;
-	if (!ppol || ppol->reject_notification)
-		return 0;
-
-	if (!down_read_trylock(&ppol->enable_sem))
-		return 0;
-	if (!ppol->governor_enabled) {
-		up_read(&ppol->enable_sem);
-		return 0;
-	}
-	tunables = ppol->policy->governor_data;
-	if (!tunables->use_sched_load || !tunables->use_migration_notif) {
-		up_read(&ppol->enable_sem);
-		return 0;
-	}
-
-	del_timer(&ppol->policy_timer);
-	del_timer(&ppol->policy_slack_timer);
-	cpufreq_impulse_timer(cpu);
-
-	up_read(&ppol->enable_sem);
-	return 0;
-}
-
-static struct notifier_block load_notifier_block = {
-	.notifier_call = load_change_callback,
-};
 
 static int cpufreq_impulse_notifier(
 	struct notifier_block *nb, unsigned long val, void *data)
@@ -957,8 +871,6 @@ static ssize_t store_timer_rate(struct cpufreq_impulse_tunables *tunables,
 {
 	int ret;
 	unsigned long val, val_round;
-	struct cpufreq_impulse_tunables *t;
-	int cpu;
 
 	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
@@ -972,22 +884,6 @@ static ssize_t store_timer_rate(struct cpufreq_impulse_tunables *tunables,
 #ifdef CONFIG_STATE_NOTIFIER
 	tunables->timer_rate_prev = val_round;
 #endif
-
-	if (!tunables->use_sched_load)
-		return count;
-
-	for_each_possible_cpu(cpu) {
-		if (!per_cpu(polinfo, cpu))
-			continue;
-		t = per_cpu(polinfo, cpu)->cached_tunables;
-		if (t && t->use_sched_load) {
-			t->timer_rate = val_round;
-#ifdef CONFIG_STATE_NOTIFIER
-			t->timer_rate_prev = val_round;
-#endif
-		}
-	}
-	set_window_helper(tunables);
 
 	return count;
 }
@@ -1023,166 +919,11 @@ static ssize_t store_io_is_busy(struct cpufreq_impulse_tunables *tunables,
 {
 	int ret;
 	unsigned long val;
-	struct cpufreq_impulse_tunables *t;
-	int cpu;
 
 	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	tunables->io_is_busy = val;
-
-	if (!tunables->use_sched_load)
-		return count;
-
-	for_each_possible_cpu(cpu) {
-		if (!per_cpu(polinfo, cpu))
-			continue;
-		t = per_cpu(polinfo, cpu)->cached_tunables;
-		if (t && t->use_sched_load)
-			t->io_is_busy = val;
-	}
-	sched_set_io_is_busy(val);
-
-	return count;
-}
-
-static int cpufreq_impulse_enable_sched_input(
-			struct cpufreq_impulse_tunables *tunables)
-{
-	int rc = 0, j;
-	struct cpufreq_impulse_tunables *t;
-
-	mutex_lock(&sched_lock);
-
-	set_window_count++;
-	if (set_window_count > 1) {
-		for_each_possible_cpu(j) {
-			if (!per_cpu(polinfo, j))
-				continue;
-			t = per_cpu(polinfo, j)->cached_tunables;
-			if (t && t->use_sched_load) {
-				tunables->timer_rate = t->timer_rate;
-				tunables->io_is_busy = t->io_is_busy;
-				break;
-			}
-		}
-	} else {
-		rc = set_window_helper(tunables);
-		if (rc) {
-			pr_err("%s: Failed to set sched window\n", __func__);
-			set_window_count--;
-			goto out;
-		}
-		sched_set_io_is_busy(tunables->io_is_busy);
-	}
-
-	if (!tunables->use_migration_notif)
-		goto out;
-
-	migration_register_count++;
-	if (migration_register_count > 1)
-		goto out;
-	else
-		atomic_notifier_chain_register(&load_alert_notifier_head,
-						&load_notifier_block);
-out:
-	mutex_unlock(&sched_lock);
-	return rc;
-}
-
-static int cpufreq_impulse_disable_sched_input(
-			struct cpufreq_impulse_tunables *tunables)
-{
-	mutex_lock(&sched_lock);
-
-	if (tunables->use_migration_notif) {
-		migration_register_count--;
-		if (migration_register_count < 1)
-			atomic_notifier_chain_unregister(
-					&load_alert_notifier_head,
-					&load_notifier_block);
-	}
-	set_window_count--;
-
-	mutex_unlock(&sched_lock);
-	return 0;
-}
-
-static ssize_t show_use_sched_load(
-		struct cpufreq_impulse_tunables *tunables, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", tunables->use_sched_load);
-}
-
-static ssize_t store_use_sched_load(
-			struct cpufreq_impulse_tunables *tunables,
-			const char *buf, size_t count)
-{
-	int ret;
-	unsigned long val;
-
-	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-
-	if (tunables->use_sched_load == (bool) val)
-		return count;
-
-	tunables->use_sched_load = val;
-
-	if (val)
-		ret = cpufreq_impulse_enable_sched_input(tunables);
-	else
-		ret = cpufreq_impulse_disable_sched_input(tunables);
-
-	if (ret) {
-		tunables->use_sched_load = !val;
-		return ret;
-	}
-
-	return count;
-}
-
-static ssize_t show_use_migration_notif(
-		struct cpufreq_impulse_tunables *tunables, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n",
-			tunables->use_migration_notif);
-}
-
-static ssize_t store_use_migration_notif(
-			struct cpufreq_impulse_tunables *tunables,
-			const char *buf, size_t count)
-{
-	int ret;
-	unsigned long val;
-
-	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-
-	if (tunables->use_migration_notif == (bool) val)
-		return count;
-	tunables->use_migration_notif = val;
-
-	if (!tunables->use_sched_load)
-		return count;
-
-	mutex_lock(&sched_lock);
-	if (val) {
-		migration_register_count++;
-		if (migration_register_count == 1)
-			atomic_notifier_chain_register(
-					&load_alert_notifier_head,
-					&load_notifier_block);
-	} else {
-		migration_register_count--;
-		if (!migration_register_count)
-			atomic_notifier_chain_unregister(
-					&load_alert_notifier_head,
-					&load_notifier_block);
-	}
-	mutex_unlock(&sched_lock);
 
 	return count;
 }
@@ -1250,8 +991,6 @@ show_store_gov_pol_sys(min_sample_time);
 show_store_gov_pol_sys(timer_rate);
 show_store_gov_pol_sys(timer_slack);
 show_store_gov_pol_sys(io_is_busy);
-show_store_gov_pol_sys(use_sched_load);
-show_store_gov_pol_sys(use_migration_notif);
 show_store_gov_pol_sys(max_freq_hysteresis);
 show_store_gov_pol_sys(align_windows);
 show_store_gov_pol_sys(powersave_bias);
@@ -1276,8 +1015,6 @@ gov_sys_pol_attr_rw(min_sample_time);
 gov_sys_pol_attr_rw(timer_rate);
 gov_sys_pol_attr_rw(timer_slack);
 gov_sys_pol_attr_rw(io_is_busy);
-gov_sys_pol_attr_rw(use_sched_load);
-gov_sys_pol_attr_rw(use_migration_notif);
 gov_sys_pol_attr_rw(max_freq_hysteresis);
 gov_sys_pol_attr_rw(align_windows);
 gov_sys_pol_attr_rw(powersave_bias);
@@ -1292,8 +1029,6 @@ static struct attribute *impulse_attributes_gov_sys[] = {
 	&timer_rate_gov_sys.attr,
 	&timer_slack_gov_sys.attr,
 	&io_is_busy_gov_sys.attr,
-	&use_sched_load_gov_sys.attr,
-	&use_migration_notif_gov_sys.attr,
 	&max_freq_hysteresis_gov_sys.attr,
 	&align_windows_gov_sys.attr,
 	&powersave_bias_gov_sys.attr,
@@ -1315,8 +1050,6 @@ static struct attribute *impulse_attributes_gov_pol[] = {
 	&timer_rate_gov_pol.attr,
 	&timer_slack_gov_pol.attr,
 	&io_is_busy_gov_pol.attr,
-	&use_sched_load_gov_pol.attr,
-	&use_migration_notif_gov_pol.attr,
 	&max_freq_hysteresis_gov_pol.attr,
 	&align_windows_gov_pol.attr,
 	&powersave_bias_gov_pol.attr,
@@ -1470,25 +1203,24 @@ static int cpufreq_governor_impulse(struct cpufreq_policy *policy,
 
 		tunables->usage_count = 1;
 		policy->governor_data = tunables;
-		if (!have_governor_per_policy())
+		if (!have_governor_per_policy()) {
 			common_tunables = tunables;
+		}
 
 		rc = sysfs_create_group(get_governor_parent_kobj(policy),
 				get_sysfs_attr());
 		if (rc) {
 			kfree(tunables);
 			policy->governor_data = NULL;
-			if (!have_governor_per_policy())
+			if (!have_governor_per_policy()) {
 				common_tunables = NULL;
+			}
 			return rc;
 		}
 
 		if (!policy->governor->initialized)
 			cpufreq_register_notifier(&cpufreq_notifier_block,
 					CPUFREQ_TRANSITION_NOTIFIER);
-
-		if (tunables->use_sched_load)
-			cpufreq_impulse_enable_sched_input(tunables);
 
 		if (have_governor_per_policy())
 			ppol->cached_tunables = tunables;
@@ -1505,13 +1237,11 @@ static int cpufreq_governor_impulse(struct cpufreq_policy *policy,
 
 			sysfs_remove_group(get_governor_parent_kobj(policy),
 					get_sysfs_attr());
+			if (!have_governor_per_policy())
 			common_tunables = NULL;
 		}
 
 		policy->governor_data = NULL;
-
-		if (tunables->use_sched_load)
-			cpufreq_impulse_disable_sched_input(tunables);
 
 		break;
 
@@ -1605,7 +1335,6 @@ static int __init cpufreq_impulse_init(void)
 
 	spin_lock_init(&speedchange_cpumask_lock);
 	mutex_init(&gov_lock);
-	mutex_init(&sched_lock);
 	speedchange_task =
 		kthread_create(cpufreq_impulse_speedchange_task, NULL,
 			       "cfimpulse");
