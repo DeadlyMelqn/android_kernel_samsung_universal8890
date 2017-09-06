@@ -18,10 +18,10 @@ config PANEL_AID_DIMMING
 	default n
 
 config PANEL_SMART_DIMMING
-	depends on PANEL_AID_DIMMING
-	tristate "Support SMART Dimming"
+	depends on PANEL_AID_DIMMING && PANEL_S6E3HF4_WQHD
 	default n
 
+	tristate "Support SMART Dimming"
 config EXYNOS_DECON_LCD_MCD
 	depends on EXYNOS_DECON_LCD_SYSFS
 	tristate "Support MCD"
