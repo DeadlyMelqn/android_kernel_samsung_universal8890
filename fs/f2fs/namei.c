@@ -75,8 +75,6 @@ static struct inode *f2fs_new_inode(struct inode *dir, umode_t mode)
 		set_inode_flag(inode, FI_INLINE_XATTR);
 	if (test_opt(sbi, INLINE_DATA) && f2fs_may_inline_data(inode))
 		set_inode_flag(inode, FI_INLINE_DATA);
-	if (f2fs_may_inline_dentry(inode))
-		set_inode_flag(inode, FI_INLINE_DENTRY);
 
 	f2fs_init_extent_tree(inode, NULL);
 
@@ -259,7 +257,6 @@ static int __recover_dot_dentries(struct inode *dir, nid_t pino)
 	f2fs_balance_fs(sbi, true);
 
 	f2fs_lock_op(sbi);
-
 	de = f2fs_find_entry(dir, &dot, &page, NULL);
 	if (de) {
 		f2fs_dentry_kunmap(dir, page);
@@ -272,7 +269,6 @@ static int __recover_dot_dentries(struct inode *dir, nid_t pino)
 		if (err)
 			goto out;
 	}
-
 	de = f2fs_find_entry(dir, &dotdot, &page, NULL);
 	if (de) {
 		f2fs_dentry_kunmap(dir, page);

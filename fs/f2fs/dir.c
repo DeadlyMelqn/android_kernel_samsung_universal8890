@@ -283,6 +283,7 @@ struct f2fs_dir_entry *f2fs_find_entry(struct inode *dir,
 			*res_page = ERR_PTR(err);
 		return NULL;
 	}
+	de = __f2fs_find_entry(dir, &fname, res_page, ci_name_buf);
 
 	de = __f2fs_find_entry(dir, &fname, res_page, ci_name_buf);
 
@@ -302,7 +303,6 @@ ino_t f2fs_inode_by_name(struct inode *dir, const struct qstr *qstr,
 {
 	ino_t res = 0;
 	struct f2fs_dir_entry *de;
-
 	de = f2fs_find_entry(dir, qstr, page, NULL);
 	if (de) {
 		res = le32_to_cpu(de->ino);
