@@ -30,6 +30,7 @@ is_slot_device=0;
 # set permissions for included ramdisk files
 chmod 640 $ramdisk/fstab.samsungexynos8890
 chmod 750 $ramdisk/init.services.rc
+chmod 750 $ramdisk/sbin/sepolicy.sh
 chmod 750 $ramdisk/sbin/sysinit.sh
 
 
