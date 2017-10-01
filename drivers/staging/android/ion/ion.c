@@ -637,17 +637,18 @@ static void ion_handle_get(struct ion_handle *handle)
 	kref_get(&handle->ref);
 }
 
-/* Must hold the client lock */
-static struct ion_handle* ion_handle_get_check_overflow(struct ion_handle *handle)
-{
-	if (atomic_read(&handle->ref.refcount) + 1 == 0)
-		return ERR_PTR(-EOVERFLOW);
-	ion_handle_get(handle);
-	return handle;
-}
-
 static int ion_handle_put_nolock(struct ion_handle *handle)
 {
+	int ret;
+
+	ret = kref_put(&handle->ref, ion_handle_destroy);
+
+	return ret;
+}
+
+int ion_handle_put(struct ion_handle *handle)
+{
+	struct ion_client *client = handle->client;
 	int ret;
 
 	ret = kref_put(&handle->ref, ion_handle_destroy);
@@ -661,13 +662,6 @@ int ion_handle_put(struct ion_client *client, struct ion_handle *handle)
 	int ret;
 
 	mutex_lock(&client->lock);
-	valid_handle = ion_handle_validate(client, handle);
-
-	if (!valid_handle) {
-		WARN(1, "%s: invalid handle passed to free.\n", __func__);
-		mutex_unlock(&client->lock);
-		return -EINVAL;
-	}
 	ret = ion_handle_put_nolock(handle);
 	mutex_unlock(&client->lock);
 
@@ -743,13 +737,25 @@ static struct ion_handle *ion_handle_get_by_id_nolock(struct ion_client *client,
 
 	handle = idr_find(&client->idr, id);
 	if (handle)
-		return ion_handle_get_check_overflow(handle);
+		ion_handle_get(handle);
 
 	return ERR_PTR(-EINVAL);
 }
 
 struct ion_handle *ion_handle_get_by_id(struct ion_client *client,
 						int id)
+{
+	struct ion_handle *handle;
+
+	mutex_lock(&client->lock);
+	handle = ion_handle_get_by_id_nolock(client, id);
+	mutex_unlock(&client->lock);
+
+	return handle;
+}
+
+static bool ion_handle_validate(struct ion_client *client,
+				struct ion_handle *handle)
 {
 	struct ion_handle *handle;
 
@@ -907,24 +913,6 @@ static void ion_free_nolock(struct ion_client *client, struct ion_handle *handle
 		return;
 	}
 	ion_handle_put_nolock(handle);
-}
-
-static void user_ion_free_nolock(struct ion_client *client, struct ion_handle *handle)
-{
-	bool valid_handle;
-
-	BUG_ON(client != handle->client);
-
-	valid_handle = ion_handle_validate(client, handle);
-	if (!valid_handle) {
-		WARN(1, "%s: invalid handle passed to free.\n", __func__);
-		return;
-	}
-	if (!handle->user_ref_count > 0) {
-		WARN(1, "%s: User does not have access!\n", __func__);
-		return;
-	}
-	user_ion_handle_put_nolock(handle);
 }
 
 void ion_free(struct ion_client *client, struct ion_handle *handle)
@@ -1924,7 +1912,7 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			mutex_unlock(&client->lock);
 			return PTR_ERR(handle);
 		}
-		user_ion_free_nolock(client, handle);
+		ion_free_nolock(client, handle);
 		ion_handle_put_nolock(handle);
 		mutex_unlock(&client->lock);
 		break;
