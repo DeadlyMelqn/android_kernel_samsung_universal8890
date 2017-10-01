@@ -1417,24 +1417,9 @@ static int exynos5_i2c_xfer(struct i2c_adapter *adap,
 		return -EIO;
 	}
 
-#ifdef CONFIG_PM_RUNTIME
-	clk_ret = pm_runtime_get_sync(i2c->dev);
-	if (clk_ret < 0) {
-		exynos_update_ip_idle_status(i2c->idle_ip_index, 0);
-		clk_prepare_enable(i2c->clk);
-	}
-#else
-	exynos_update_ip_idle_status(i2c->idle_ip_index, 0);
-	clk_prepare_enable(i2c->clk);
-#endif
-	/* If master is in arbitration lost state before transfer */
-	/* master should be reset */
-	if (i2c->reset_before_trans) {
-		if (unlikely((readl(i2c->regs + HSI2C_TRANS_STATUS)
-			& HSI2C_MAST_ST_MASK) == 0xC)) {
-			i2c->need_hw_init = 1;
-		}
-	}
+	ret = clk_enable(i2c->clk);
+	if (ret)
+		return ret;
 
 	if ((i2c->need_hw_init) && !(i2c->support_hsi2c_batcher))
 		exynos5_i2c_reset(i2c);
@@ -1486,19 +1471,7 @@ static int exynos5_i2c_xfer(struct i2c_adapter *adap,
 	}
 
  out:
-#ifdef CONFIG_PM_RUNTIME
-	if (clk_ret < 0) {
-		clk_disable_unprepare(i2c->clk);
-		exynos_update_ip_idle_status(i2c->idle_ip_index, 1);
-	} else {
-		pm_runtime_mark_last_busy(i2c->dev);
-		pm_runtime_put_autosuspend(i2c->dev);
-	}
-#else
-	clk_disable_unprepare(i2c->clk);
-	exynos_update_ip_idle_status(i2c->idle_ip_index, 1);
-#endif
-
+	clk_disable(i2c->clk);
 	return ret;
 }
 
@@ -1627,11 +1600,9 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	i2c->rate_clk = devm_clk_get(&pdev->dev, "rate_hsi2c");
-	if (IS_ERR(i2c->rate_clk)) {
-		dev_err(&pdev->dev, "cannot get rate clock\n");
-		return -ENOENT;
-	}
+	ret = clk_prepare_enable(i2c->clk);
+	if (ret)
+		return ret;
 
 #ifdef CONFIG_PM_RUNTIME
 	pm_runtime_use_autosuspend(&pdev->dev);
@@ -1754,33 +1725,8 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	exynos_update_ip_idle_status(i2c->idle_ip_index, 1);
 #endif
 
-#if defined(CONFIG_CPU_IDLE) || \
-	defined(CONFIG_EXYNOS_APM)
-	list_add_tail(&i2c->node, &drvdata_list);
-#endif
+	clk_disable(i2c->clk);
 
-#ifdef CONFIG_EXYNOS_APM
-	if (of_get_property(np, "samsung,use-apm", NULL)) {
-		i2c->use_apm_mode = 1;
-		apm_i2c_pinctrl = devm_pinctrl_get(&pdev->dev);
-		if (IS_ERR(apm_i2c_pinctrl)) {
-			dev_err(&pdev->dev, "Can't get apm i2c pinctrl.\n");
-		} else {
-			default_i2c_gpio = pinctrl_lookup_state(apm_i2c_pinctrl, "default");
-			apm_i2c_gpio = pinctrl_lookup_state(apm_i2c_pinctrl, "apm");
-		}
-
-		/* When APM uses HSI2C device, APM can't control HSI2C clock
-		 * because of clock synchronization. Therefore we don't disable the clock
-		 * by calling clock enable function one more.
-		 */
-		if (of_get_property(np, "samsung,apm-always-clkon", NULL))
-			clk_prepare_enable(i2c->clk);
-	} else {
-		i2c->use_apm_mode = 0;
-	}
-
-#endif
 	return 0;
 
  err_clk:
@@ -1795,6 +1741,8 @@ static int exynos5_i2c_remove(struct platform_device *pdev)
 
 	i2c_del_adapter(&i2c->adap);
 
+	clk_unprepare(i2c->clk);
+
 	return 0;
 }
 
@@ -1808,6 +1756,8 @@ static int exynos5_i2c_suspend_noirq(struct device *dev)
 	i2c->suspended = 1;
 	i2c_unlock_adapter(&i2c->adap);
 
+	clk_unprepare(i2c->clk);
+
 	return 0;
 }
 
@@ -1816,14 +1766,18 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct exynos5_i2c *i2c = platform_get_drvdata(pdev);
 
-	i2c_lock_adapter(&i2c->adap);
-	exynos_update_ip_idle_status(i2c->idle_ip_index, 0);
-	clk_prepare_enable(i2c->clk);
-	/* I2C for batcher doesn't need reset */
-	if(!(i2c->support_hsi2c_batcher))
-		exynos5_i2c_reset(i2c);
-	clk_disable_unprepare(i2c->clk);
-	exynos_update_ip_idle_status(i2c->idle_ip_index, 1);
+	ret = clk_prepare_enable(i2c->clk);
+	if (ret)
+		return ret;
+
+	ret = exynos5_hsi2c_clock_setup(i2c);
+	if (ret) {
+		clk_disable_unprepare(i2c->clk);
+		return ret;
+	}
+
+	exynos5_i2c_init(i2c);
+	clk_disable(i2c->clk);
 	i2c->suspended = 0;
 	i2c_unlock_adapter(&i2c->adap);
 
