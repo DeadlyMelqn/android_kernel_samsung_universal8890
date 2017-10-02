@@ -20,9 +20,7 @@ KERNEL_VERSION="1.0.1"
 KERNEL_REVISION="1"
 KERNEL_BETA="0"
 
-export ARCH=arm64
 export BUILD_JOB_NUMBER=$(grep processor /proc/cpuinfo | wc -l)
-export BUILD_CROSS_COMPILE=../aarch64-linaro-linux-android-7.2.1-20170916/bin/aarch64-linaro-linux-android-
 
 FUNC_CLEAN_ENVIRONMENT()
 {
