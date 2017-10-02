@@ -147,7 +147,7 @@ KERNEL_DEFCONFIG=prophecy-${MODEL}_defconfig
 PAGE_SIZE=2048
 DTB_PADDING=0
 
-RDIR=~/out
+RDIR=~/github/yuvkernel
 OUTDIR=$RDIR/arch/$ARCH/boot
 DTSDIR=$RDIR/arch/$ARCH/boot/dts
 DTBDIR=$OUTDIR/dtb
