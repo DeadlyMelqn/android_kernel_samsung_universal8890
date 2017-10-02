@@ -22,7 +22,7 @@ KERNEL_BETA="0"
 
 export ARCH=arm64
 export BUILD_JOB_NUMBER=$(grep processor /proc/cpuinfo | wc -l)
-export BUILD_CROSS_COMPILE=../aarch64-linaro-linux-android-7.2.1-20170916/bin/aarch64-linaro-linux-android-
+export BUILD_CROSS_COMPILE=~/toolchains/aarch64-cortex_a53-linux-gnueabi/bin/aarch64-cortex_a53-linux-gnueabi-
 
 FUNC_CLEAN_ENVIRONMENT()
 {
@@ -147,7 +147,7 @@ KERNEL_DEFCONFIG=prophecy-${MODEL}_defconfig
 PAGE_SIZE=2048
 DTB_PADDING=0
 
-RDIR=$(pwd)
+RDIR=~/out
 OUTDIR=$RDIR/arch/$ARCH/boot
 DTSDIR=$RDIR/arch/$ARCH/boot/dts
 DTBDIR=$OUTDIR/dtb
